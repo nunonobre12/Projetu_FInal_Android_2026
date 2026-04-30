@@ -1,121 +1,192 @@
+
 import 'package:flutter/material.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const RacingGameApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
 
-  // This widget is the root of your application.
+class RacingGameApp extends StatelessWidget {
+  const RacingGameApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      debugShowCheckedModeBanner: false,
+      title: 'CAR GAME',
+      // [V1] Simple red theme applied globally
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFE63946)),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const RacingGamePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+enum _GameView {
+  menu,
+  playing,
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
 
-  void _incrementCounter() {
+class RacingGamePage extends StatefulWidget {
+  const RacingGamePage({super.key});
+
+  @override
+  State<RacingGamePage> createState() => _RacingGamePageState();
+}
+
+class _RacingGamePageState extends State<RacingGamePage> {
+  _GameView _view = _GameView.menu;
+
+  final TextEditingController _nameController = TextEditingController();
+  String? _nameValidationMessage;
+  String _activePlayerName = '';
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+ 
+  void _startGame() {
+    final String username = _nameController.text.trim();
+    if (username.isEmpty) {
+      setState(() {
+        _nameValidationMessage = 'Favor Insere Naran Antes Halimar';
+      });
+      return;
+    }
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _activePlayerName = username;
+      _nameValidationMessage = null;
+      _view = _GameView.playing;
+    });
+  }
+
+  void _backToMenu() {
+    setState(() {
+      _view = _GameView.menu;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    if (_view == _GameView.menu) {
+      return _buildMenu();
+    }
+    // [V1] Placeholder playing screen - just a simple scaffold
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
+      backgroundColor: const Color(0xFF0F1115),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              'Playing as: $_activePlayerName',
+              style: const TextStyle(color: Colors.white, fontSize: 20),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _backToMenu,
+              child: const Text('Back to Menu'),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+
+  Widget _buildMenu() {
+    return Scaffold(
+      body: Container(
+        // [V1] Dark gradient background for the menu
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              Color(0xFF151A22),
+              Color(0xFF0E1218),
+              Color(0xFF171D25),
+            ],
+            stops: <double>[0.0, 0.5, 1.0],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  // [V1] Game title text
+                  const Text(
+                    'CAR GAME',
+                    style: TextStyle(
+                      fontSize: 42,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 2.2,
+                      color: Color(0xFFECEFF4),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'HALAI HASORU OBSTAKULU SIRA',
+                    style: TextStyle(
+                      color: Color(0xFF9AA5B1),
+                      letterSpacing: 1.0,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  // [V1] Player name text field
+                  TextField(
+                    controller: _nameController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'Naran Ita-nia',
+                      labelStyle: const TextStyle(color: Colors.white60),
+                      errorText: _nameValidationMessage,
+                      filled: true,
+                      fillColor: const Color(0xFF1C2330),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  // [V1] Play button
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _startGame,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFE63946),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      child: const Text(
+                        'HAHU JOGU',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
