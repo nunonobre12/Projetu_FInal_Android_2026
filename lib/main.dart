@@ -24,7 +24,7 @@ class RacingGameApp extends StatelessWidget {
 
 enum _GameView { menu, playing }
 
-// [V3 ADDED] _EnemyCar holds position, lane, speed boost, and asset for each obstacle
+//  _EnemyCar holds position, lane, speed boost, and asset for each obstacle
 class _EnemyCar {
   _EnemyCar({
     required this.lane,
@@ -52,7 +52,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ticker;
 
-  // [V3 ADDED] Number of lanes on the road
+  //  Number of lanes on the road
   static const int _laneCount = 4;
   static const double _playerWidthFactor = 0.16;
   static const double _playerHeightFactor = 0.13;
@@ -64,7 +64,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     'assets/images/car_3.png',
     'assets/images/car_4.png',
   ];
-  // [V3 ADDED] Pool of enemy car images for random selection
+  //  Pool of enemy car images for random selection
   static const List<String> _enemyCarOptions = <String>[
     'assets/images/car_5.png',
     'assets/images/car_6.png',
@@ -74,9 +74,9 @@ class _RacingGamePageState extends State<RacingGamePage>
     'assets/images/car_10.png',
   ];
 
-  // [V3 ADDED] Random number generator for spawning and speed variation
+  //  Random number generator for spawning and speed variation
   final Random _random = Random();
-  // [V3 ADDED] Active enemies list
+  //  Active enemies list
   final List<_EnemyCar> _enemies = <_EnemyCar>[];
   final TextEditingController _nameController = TextEditingController();
 
@@ -84,22 +84,22 @@ class _RacingGamePageState extends State<RacingGamePage>
   double _playerX = 0;
   double _roadOffset = 0;
   double _baseSpeed = 0.44;
-  // [V3 ADDED] Difficulty ramps up over time
+  //  Difficulty ramps up over time
   double _difficulty = 0;
-  // [V3 ADDED] Countdown until the next enemy wave spawns
+  //  Countdown until the next enemy wave spawns
   double _spawnTimer = 0;
   double _lastPaintMicros = 0;
-  // [V3 ADDED] Total time the player has survived (drives difficulty)
+  //  Total time the player has survived (drives difficulty)
   double _survivalTime = 0;
   double _elapsed = 0;
   double _smoothedDt = 0.016;
   String? _nameValidationMessage;
   String _activePlayerName = '';
 
-  // [V3 ADDED] Current and best scores
+  //  Current and best scores
   int _score = 0;
   int _bestScore = 0;
-  // [V3 ADDED] Game state flags
+  //  Game state flags
   bool _isGameOver = false;
   bool _isCrashing = false;
   double _crashFxTime = 0;
@@ -148,7 +148,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     setState(() => _resetState());
   }
 
-  // [V3 ADDED] Full game state reset - clears enemies, resets scores and timers
+  //  Full game state reset - clears enemies, resets scores and timers
   void _resetState() {
     _enemies.clear();
     _playerX = 0;
@@ -177,7 +177,7 @@ class _RacingGamePageState extends State<RacingGamePage>
 
     if (!mounted || _view != _GameView.playing || _isGameOver) return;
 
-    // [V3 ADDED] Run crash animation timer before everything else
+    //  Run crash animation timer before everything else
     if (_isCrashing) {
       _crashFxTime = max(0, _crashFxTime - dt);
       if (_crashFxTime <= 0) _finishGameOver();
@@ -191,25 +191,25 @@ class _RacingGamePageState extends State<RacingGamePage>
     final double speed = _baseSpeed + _pacedDifficulty() * (0.56 + earlyRamp * 0.34);
     _roadOffset += dt * (1.18 + speed * (1.58 + earlyRamp * 0.56));
 
-    // [V3 ADDED] Move all enemies downward each frame
+    //  Move all enemies downward each frame
     for (final _EnemyCar enemy in _enemies) {
       enemy.y += dt * (0.72 + enemy.speedBoost + speed * 1.7);
     }
 
-    // [V3 ADDED] Remove enemies that have scrolled off the bottom
+    //  Remove enemies that have scrolled off the bottom
     _enemies.removeWhere((enemy) => enemy.y > 1.3);
 
-    // [V3 ADDED] Spawn new wave of enemies when timer elapses
+    //  Spawn new wave of enemies when timer elapses
     _spawnTimer -= dt;
     if (_spawnTimer <= 0) {
       _spawnEnemyWave();
       _spawnTimer = _nextSpawnDelay();
     }
 
-    // [V3 ADDED] Increment score over time (faster at higher difficulty)
+    //  Increment score over time (faster at higher difficulty)
     _score += (dt * 90 * (1 + _difficulty)).round();
 
-    // [V3 ADDED] Check for collision every frame
+    //  Check for collision every frame
     if (_findCollidingEnemy() != null) {
       _triggerCrashEffect();
       return;
@@ -220,7 +220,7 @@ class _RacingGamePageState extends State<RacingGamePage>
 
   double _pacedDifficulty() => min(_difficulty, 1.48);
 
-  // [V3 ADDED] Calculate delay until the next enemy wave based on difficulty
+  //  Calculate delay until the next enemy wave based on difficulty
   double _nextSpawnDelay() {
     final double earlyAssist = _survivalTime < 15 ? (15 - _survivalTime) / 15 : 0;
     final double baseDelay = max(0.24, 0.82 - _pacedDifficulty() * 0.28);
@@ -228,7 +228,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     return baseDelay * jitter + earlyAssist * 0.22;
   }
 
-  // [V3 ADDED] Spawn one or more enemies in random lanes each wave
+  //  Spawn one or more enemies in random lanes each wave
   void _spawnEnemyWave() {
     final List<int> lanes = List<int>.generate(_laneCount, (i) => i)..shuffle(_random);
     for (final int lane in lanes) {
@@ -239,7 +239,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     }
   }
 
-  // [V3 ADDED] Ensure there is enough vertical gap before spawning in a lane
+  //  Ensure there is enough vertical gap before spawning in a lane
   bool _canSpawnInLane(int lane) {
     const double spawnY = -1.24;
     const double minGap = 0.64;
@@ -248,7 +248,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     );
   }
 
-  // [V3 ADDED] Create a new enemy car in the given lane
+  //  Create a new enemy car in the given lane
   void _spawnEnemyInLane(int lane, {double? xOverride}) {
     final double laneWidth = 2 / _laneCount;
     final double x = xOverride ?? (-1 + laneWidth * lane + laneWidth / 2);
@@ -261,7 +261,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     ));
   }
 
-  // [V3 ADDED] Axis-aligned bounding box for the player car
+  //  Axis-aligned bounding box for the player car
   Rect _playerHitBox() {
     return Rect.fromCenter(
       center: Offset(_playerX, 0.79),
@@ -270,7 +270,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     ).inflate(0.01);
   }
 
-  // [V3 ADDED] Axis-aligned bounding box for a specific enemy car
+  //  Axis-aligned bounding box for a specific enemy car
   Rect _enemyHitBox(_EnemyCar enemy) {
     return Rect.fromCenter(
       center: Offset(enemy.x, enemy.y),
@@ -279,7 +279,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     ).inflate(0.008);
   }
 
-  // [V3 ADDED] Scan enemy list and return the first car overlapping the player
+  //  Scan enemy list and return the first car overlapping the player
   _EnemyCar? _findCollidingEnemy() {
     final Rect playerRect = _playerHitBox();
     for (final _EnemyCar enemy in _enemies) {
@@ -288,7 +288,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     return null;
   }
 
-  // [V3 ADDED] Begin the crash visual effect (short timer before game-over screen)
+  //  Begin the crash visual effect (short timer before game-over screen)
   void _triggerCrashEffect() {
     if (_isCrashing || _isGameOver) return;
     setState(() {
@@ -297,7 +297,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     });
   }
 
-  // [V3 ADDED] Finalise game over - save best score and show overlay
+  //  Finalise game over - save best score and show overlay
   void _finishGameOver() {
     setState(() {
       _isGameOver = true;
@@ -325,12 +325,12 @@ class _RacingGamePageState extends State<RacingGamePage>
             child: Stack(
               children: <Widget>[
                 Positioned.fill(child: _RoadLayer(offset: _roadOffset)),
-                // [V3 ADDED] Render all active enemy cars
+                // . Render all active enemy cars
                 ..._enemies.map((enemy) => _buildEnemy(enemy, constraints)),
                 _buildPlayerCar(constraints),
-                // [V3 ADDED] Heads-up display showing current score
+                // . Heads-up display showing current score
                 _buildHud(),
-                // [V3 ADDED] Game over overlay with restart button
+                //  Game over overlay with restart button
                 if (_isGameOver) _buildGameOverOverlay(),
                 _buildTouchControls(),
               ],
@@ -341,7 +341,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     );
   }
 
-  // [V3 ADDED] Render a single enemy car at its normalised position
+  //  Render a single enemy car at its normalised position
   Widget _buildEnemy(_EnemyCar enemy, BoxConstraints c) {
     final double w = c.maxWidth;
     final double h = c.maxHeight;
@@ -368,7 +368,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     );
   }
 
-  // [V3 ADDED] Score and best score HUD in the top-left corner
+  //  Score and best score HUD in the top-left corner
   Widget _buildHud() {
     return Positioned(
       top: 16, left: 16,
@@ -384,7 +384,7 @@ class _RacingGamePageState extends State<RacingGamePage>
     );
   }
 
-  // [V3 ADDED] Full-screen overlay shown when the player crashes
+  //  Full-screen overlay shown when the player crashes
   Widget _buildGameOverOverlay() {
     return Positioned.fill(
       child: Container(
