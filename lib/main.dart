@@ -1,9 +1,9 @@
+import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
-void main() {
-  runApp(const RacingGameApp());
-}
+void main() => runApp(const RacingGameApp());
 
 class RacingGameApp extends StatelessWidget {
   const RacingGameApp({super.key});
@@ -24,6 +24,23 @@ class RacingGameApp extends StatelessWidget {
 
 enum _GameView { menu, playing }
 
+// [V3 ADDED] _EnemyCar holds position, lane, speed boost, and asset for each obstacle
+class _EnemyCar {
+  _EnemyCar({
+    required this.lane,
+    required this.x,
+    required this.y,
+    required this.speedBoost,
+    required this.assetPath,
+  });
+
+  int lane;
+  double x;
+  double y;
+  double speedBoost;
+  String assetPath;
+}
+
 class RacingGamePage extends StatefulWidget {
   const RacingGamePage({super.key});
 
@@ -31,46 +48,67 @@ class RacingGamePage extends StatefulWidget {
   State<RacingGamePage> createState() => _RacingGamePageState();
 }
 
-// SingleTickerProviderStateMixin enables the AnimationController
 class _RacingGamePageState extends State<RacingGamePage>
     with SingleTickerProviderStateMixin {
-  //  AnimationController acts as the game loop ticker
   late final AnimationController _ticker;
 
+  // [V3 ADDED] Number of lanes on the road
+  static const int _laneCount = 4;
   static const double _playerWidthFactor = 0.16;
   static const double _playerHeightFactor = 0.13;
+  static const double _enemyWidthFactor = 0.155;
+  static const double _enemyHeightFactor = 0.125;
   static const List<String> _playerCarOptions = <String>[
     'assets/images/car_1.png',
     'assets/images/car_2.png',
     'assets/images/car_3.png',
     'assets/images/car_4.png',
   ];
+  // [V3 ADDED] Pool of enemy car images for random selection
+  static const List<String> _enemyCarOptions = <String>[
+    'assets/images/car_5.png',
+    'assets/images/car_6.png',
+    'assets/images/car_7.png',
+    'assets/images/car_8.png',
+    'assets/images/car_9.png',
+    'assets/images/car_10.png',
+  ];
 
+  // [V3 ADDED] Random number generator for spawning and speed variation
+  final Random _random = Random();
+  // [V3 ADDED] Active enemies list
+  final List<_EnemyCar> _enemies = <_EnemyCar>[];
   final TextEditingController _nameController = TextEditingController();
 
   _GameView _view = _GameView.menu;
-
-  //  Player horizontal position (-1.0 to 1.0 normalised)
   double _playerX = 0;
-  //  Road scroll offset drives the animated background
   double _roadOffset = 0;
   double _baseSpeed = 0.44;
-  // ] Time tracking for frame-rate-independent movement
+  // [V3 ADDED] Difficulty ramps up over time
+  double _difficulty = 0;
+  // [V3 ADDED] Countdown until the next enemy wave spawns
+  double _spawnTimer = 0;
   double _lastPaintMicros = 0;
+  // [V3 ADDED] Total time the player has survived (drives difficulty)
+  double _survivalTime = 0;
   double _elapsed = 0;
   double _smoothedDt = 0.016;
   String? _nameValidationMessage;
-  //  Selected car asset for the player sprite
+  String _activePlayerName = '';
+
+  // [V3 ADDED] Current and best scores
+  int _score = 0;
+  int _bestScore = 0;
+  // [V3 ADDED] Game state flags
+  bool _isGameOver = false;
+  bool _isCrashing = false;
+  double _crashFxTime = 0;
   String _selectedPlayerCarAsset = _playerCarOptions.first;
 
   @override
   void initState() {
     super.initState();
-    // Create ticker and attach the _update listener
-    _ticker = AnimationController(
-      vsync: this,
-      duration: const Duration(days: 1),
-    )
+    _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update)
       ..forward();
   }
@@ -82,15 +120,6 @@ class _RacingGamePageState extends State<RacingGamePage>
     super.dispose();
   }
 
-  //  Warm up image assets when dependencies are ready
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    for (final String asset in _playerCarOptions) {
-      precacheImage(AssetImage(asset), context);
-    }
-  }
-
   void _startGame() {
     final String username = _nameController.text.trim();
     if (username.isEmpty) {
@@ -98,44 +127,189 @@ class _RacingGamePageState extends State<RacingGamePage>
       return;
     }
     setState(() {
+      _activePlayerName = username;
       _nameValidationMessage = null;
       _view = _GameView.playing;
-      _playerX = 0;
-      _roadOffset = 0;
-      _elapsed = _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
+      _resetState();
     });
   }
 
-  //  Game loop: called every frame by the AnimationController
+  void _backToMenu() {
+    setState(() {
+      _view = _GameView.menu;
+      _isGameOver = false;
+      _isCrashing = false;
+      _enemies.clear();
+      _playerX = 0;
+    });
+  }
+
+  void _resetGame() {
+    setState(() => _resetState());
+  }
+
+  // [V3 ADDED] Full game state reset - clears enemies, resets scores and timers
+  void _resetState() {
+    _enemies.clear();
+    _playerX = 0;
+    _roadOffset = 0;
+    _baseSpeed = 0.5;
+    _difficulty = 0;
+    _spawnTimer = 0.62;
+    _lastPaintMicros = 0;
+    _survivalTime = 0;
+    _elapsed = _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
+    _smoothedDt = 0.016;
+    _score = 0;
+    _isGameOver = false;
+    _isCrashing = false;
+    _crashFxTime = 0;
+  }
+
   void _update() {
-    final double now =
-        _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
+    final double now = _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
     if (now == 0) return;
 
     final double rawDt = ((now - _elapsed) / 1000000).clamp(0.0, 0.04);
-    //  Exponential smoothing prevents frame-spike jitter
     _smoothedDt = _smoothedDt * 0.82 + rawDt * 0.18;
     final double dt = _smoothedDt.clamp(0.0, 0.033);
     _elapsed = now;
 
-    if (!mounted || _view != _GameView.playing) return;
+    if (!mounted || _view != _GameView.playing || _isGameOver) return;
 
-    //  Scroll the road downward each frame
-    _roadOffset += dt * (1.18 + _baseSpeed * 1.58);
+    // [V3 ADDED] Run crash animation timer before everything else
+    if (_isCrashing) {
+      _crashFxTime = max(0, _crashFxTime - dt);
+      if (_crashFxTime <= 0) _finishGameOver();
+      if (now - _lastPaintMicros >= 16000) { _lastPaintMicros = now; setState(() {}); }
+      return;
+    }
 
-    //  Throttle repaints to ~60fps to avoid over-rendering
-    if (now - _lastPaintMicros >= 16000) {
-      _lastPaintMicros = now;
-      setState(() {});
+    _survivalTime += dt;
+    final double earlyRamp = (_survivalTime / 18).clamp(0.0, 1.0);
+    _difficulty += dt * (0.032 + 0.03 * earlyRamp);
+    final double speed = _baseSpeed + _pacedDifficulty() * (0.56 + earlyRamp * 0.34);
+    _roadOffset += dt * (1.18 + speed * (1.58 + earlyRamp * 0.56));
+
+    // [V3 ADDED] Move all enemies downward each frame
+    for (final _EnemyCar enemy in _enemies) {
+      enemy.y += dt * (0.72 + enemy.speedBoost + speed * 1.7);
+    }
+
+    // [V3 ADDED] Remove enemies that have scrolled off the bottom
+    _enemies.removeWhere((enemy) => enemy.y > 1.3);
+
+    // [V3 ADDED] Spawn new wave of enemies when timer elapses
+    _spawnTimer -= dt;
+    if (_spawnTimer <= 0) {
+      _spawnEnemyWave();
+      _spawnTimer = _nextSpawnDelay();
+    }
+
+    // [V3 ADDED] Increment score over time (faster at higher difficulty)
+    _score += (dt * 90 * (1 + _difficulty)).round();
+
+    // [V3 ADDED] Check for collision every frame
+    if (_findCollidingEnemy() != null) {
+      _triggerCrashEffect();
+      return;
+    }
+
+    if (now - _lastPaintMicros >= 16000) { _lastPaintMicros = now; setState(() {}); }
+  }
+
+  double _pacedDifficulty() => min(_difficulty, 1.48);
+
+  // [V3 ADDED] Calculate delay until the next enemy wave based on difficulty
+  double _nextSpawnDelay() {
+    final double earlyAssist = _survivalTime < 15 ? (15 - _survivalTime) / 15 : 0;
+    final double baseDelay = max(0.24, 0.82 - _pacedDifficulty() * 0.28);
+    final double jitter = 0.9 + _random.nextDouble() * 0.34;
+    return baseDelay * jitter + earlyAssist * 0.22;
+  }
+
+  // [V3 ADDED] Spawn one or more enemies in random lanes each wave
+  void _spawnEnemyWave() {
+    final List<int> lanes = List<int>.generate(_laneCount, (i) => i)..shuffle(_random);
+    for (final int lane in lanes) {
+      if (_canSpawnInLane(lane)) {
+        _spawnEnemyInLane(lane);
+        break;
+      }
     }
   }
 
-  //  Move player left or right on swipe/button press
-  void _steer(double delta) {
-    if (_view != _GameView.playing) return;
+  // [V3 ADDED] Ensure there is enough vertical gap before spawning in a lane
+  bool _canSpawnInLane(int lane) {
+    const double spawnY = -1.24;
+    const double minGap = 0.64;
+    return !_enemies.any(
+      (enemy) => enemy.lane == lane && enemy.y < -0.35 && (enemy.y - spawnY).abs() < minGap,
+    );
+  }
+
+  // [V3 ADDED] Create a new enemy car in the given lane
+  void _spawnEnemyInLane(int lane, {double? xOverride}) {
+    final double laneWidth = 2 / _laneCount;
+    final double x = xOverride ?? (-1 + laneWidth * lane + laneWidth / 2);
+    _enemies.add(_EnemyCar(
+      lane: lane,
+      x: x,
+      y: -1.24,
+      speedBoost: 0.04 + _random.nextDouble() * 0.34,
+      assetPath: _enemyCarOptions[_random.nextInt(_enemyCarOptions.length)],
+    ));
+  }
+
+  // [V3 ADDED] Axis-aligned bounding box for the player car
+  Rect _playerHitBox() {
+    return Rect.fromCenter(
+      center: Offset(_playerX, 0.79),
+      width: _playerWidthFactor * 0.86,
+      height: _playerHeightFactor * 0.9,
+    ).inflate(0.01);
+  }
+
+  // [V3 ADDED] Axis-aligned bounding box for a specific enemy car
+  Rect _enemyHitBox(_EnemyCar enemy) {
+    return Rect.fromCenter(
+      center: Offset(enemy.x, enemy.y),
+      width: _enemyWidthFactor * 0.84,
+      height: _enemyHeightFactor * 0.9,
+    ).inflate(0.008);
+  }
+
+  // [V3 ADDED] Scan enemy list and return the first car overlapping the player
+  _EnemyCar? _findCollidingEnemy() {
+    final Rect playerRect = _playerHitBox();
+    for (final _EnemyCar enemy in _enemies) {
+      if (playerRect.overlaps(_enemyHitBox(enemy))) return enemy;
+    }
+    return null;
+  }
+
+  // [V3 ADDED] Begin the crash visual effect (short timer before game-over screen)
+  void _triggerCrashEffect() {
+    if (_isCrashing || _isGameOver) return;
     setState(() {
-      _playerX = (_playerX + delta).clamp(-0.77, 0.77);
+      _isCrashing = true;
+      _crashFxTime = 0.72;
     });
+  }
+
+  // [V3 ADDED] Finalise game over - save best score and show overlay
+  void _finishGameOver() {
+    setState(() {
+      _isGameOver = true;
+      _isCrashing = false;
+      _crashFxTime = 0;
+      _bestScore = max(_bestScore, _score);
+    });
+  }
+
+  void _steer(double delta) {
+    if (_isGameOver || _isCrashing || _view != _GameView.playing) return;
+    setState(() { _playerX = (_playerX + delta).clamp(-0.77, 0.77); });
   }
 
   @override
@@ -145,18 +319,19 @@ class _RacingGamePageState extends State<RacingGamePage>
     return Scaffold(
       backgroundColor: const Color(0xFF0F1115),
       body: LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints constraints) {
+        builder: (context, constraints) {
           return GestureDetector(
-            //  Drag gesture drives the steer function
-            onPanUpdate: (details) =>
-                _steer(details.delta.dx / constraints.maxWidth * 2.2),
+            onPanUpdate: (d) => _steer(d.delta.dx / constraints.maxWidth * 2.2),
             child: Stack(
               children: <Widget>[
-                // Scrolling road layer fills the background
                 Positioned.fill(child: _RoadLayer(offset: _roadOffset)),
-                // Player car positioned near the bottom
-                _buildPlayerCar(),
-                //  Left/right arrow buttons for touch steering
+                // [V3 ADDED] Render all active enemy cars
+                ..._enemies.map((enemy) => _buildEnemy(enemy, constraints)),
+                _buildPlayerCar(constraints),
+                // [V3 ADDED] Heads-up display showing current score
+                _buildHud(),
+                // [V3 ADDED] Game over overlay with restart button
+                if (_isGameOver) _buildGameOverOverlay(),
                 _buildTouchControls(),
               ],
             ),
@@ -166,54 +341,87 @@ class _RacingGamePageState extends State<RacingGamePage>
     );
   }
 
-  //  Renders the player's car sprite at the correct position
-  Widget _buildPlayerCar() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double w = constraints.maxWidth;
-        final double h = constraints.maxHeight;
-        final double carW = w * _playerWidthFactor;
-        final double carH = h * _playerHeightFactor;
-        final double cx = w / 2 + _playerX * w / 2 - carW / 2;
-        final double cy = h * 0.79 - carH / 2;
-        return Stack(
-          children: [
-            Positioned(
-              left: cx,
-              top: cy,
-              width: carW,
-              height: carH,
-              child: _CarSprite(assetPath: _selectedPlayerCarAsset),
-            ),
-          ],
-        );
-      },
+  // [V3 ADDED] Render a single enemy car at its normalised position
+  Widget _buildEnemy(_EnemyCar enemy, BoxConstraints c) {
+    final double w = c.maxWidth;
+    final double h = c.maxHeight;
+    final double carW = w * _enemyWidthFactor;
+    final double carH = h * _enemyHeightFactor;
+    final double cx = w / 2 + enemy.x * w / 2 - carW / 2;
+    final double cy = h / 2 + enemy.y * h / 2 - carH / 2;
+    return Positioned(
+      left: cx, top: cy, width: carW, height: carH,
+      child: _CarSprite(assetPath: enemy.assetPath),
     );
   }
 
-  //  Left / right control buttons at the bottom of the screen
-  Widget _buildTouchControls() {
-    return Stack(
-      children: [
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 24,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+  Widget _buildPlayerCar(BoxConstraints c) {
+    final double w = c.maxWidth;
+    final double h = c.maxHeight;
+    final double carW = w * _playerWidthFactor;
+    final double carH = h * _playerHeightFactor;
+    return Positioned(
+      left: w / 2 + _playerX * w / 2 - carW / 2,
+      top: h * 0.79 - carH / 2,
+      width: carW, height: carH,
+      child: _CarSprite(assetPath: _selectedPlayerCarAsset),
+    );
+  }
+
+  // [V3 ADDED] Score and best score HUD in the top-left corner
+  Widget _buildHud() {
+    return Positioned(
+      top: 16, left: 16,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('Score: $_score',
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+          Text('Best: $_bestScore',
+              style: const TextStyle(color: Color(0xFFFFBE0B), fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
+  // [V3 ADDED] Full-screen overlay shown when the player crashes
+  Widget _buildGameOverOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black54,
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-          _ControlButton(
-            icon: Icons.arrow_left_rounded,
-            onPressed: () => _steer(-0.12),
-          ),
-          _ControlButton(
-            icon: Icons.arrow_right_rounded,
-            onPressed: () => _steer(0.12),
-          ),
+              const Text('GAME OVER',
+                  style: TextStyle(color: Colors.red, fontSize: 36, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 12),
+              Text('Score: $_score',
+                  style: const TextStyle(color: Colors.white, fontSize: 24)),
+              const SizedBox(height: 24),
+              ElevatedButton(onPressed: _resetGame, child: const Text('Play Again')),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                  onPressed: _backToMenu,
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                  child: const Text('Main Menu')),
             ],
           ),
         ),
-      ],
+      ),
+    );
+  }
+
+  Widget _buildTouchControls() {
+    return Positioned(
+      left: 0, right: 0, bottom: 24,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: <Widget>[
+          _ControlButton(icon: Icons.arrow_left_rounded, onPressed: () => _steer(-0.12)),
+          _ControlButton(icon: Icons.arrow_right_rounded, onPressed: () => _steer(0.12)),
+        ],
+      ),
     );
   }
 
@@ -222,8 +430,7 @@ class _RacingGamePageState extends State<RacingGamePage>
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+            begin: Alignment.topCenter, end: Alignment.bottomCenter,
             colors: <Color>[Color(0xFF151A22), Color(0xFF0E1218), Color(0xFF171D25)],
             stops: <double>[0.0, 0.5, 1.0],
           ),
@@ -232,77 +439,76 @@ class _RacingGamePageState extends State<RacingGamePage>
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  const Text(
-                    'CAR GAME',
-                    style: TextStyle(
-                      fontSize: 42, fontWeight: FontWeight.w900,
-                      letterSpacing: 2.2, color: Color(0xFFECEFF4),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'HALAI HASORU OBSTAKULU SIRA',
-                    style: TextStyle(color: Color(0xFF9AA5B1), fontSize: 11,
-                        letterSpacing: 1.0, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 32),
-                  TextField(
-                    controller: _nameController,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      labelText: 'Insere Naran',
-                      labelStyle: const TextStyle(color: Colors.white60),
-                      errorText: _nameValidationMessage,
-                      filled: true,
-                      fillColor: const Color(0xFF1C2330),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  // [V2 ADDED] Car selection row lets the player pick their car before starting
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: _playerCarOptions.asMap().entries.map((e) {
-                      final bool selected = e.value == _selectedPlayerCarAsset;
-                      return GestureDetector(
-                        onTap: () => setState(() => _selectedPlayerCarAsset = e.value),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: selected ? const Color(0xFF2ECC71) : Colors.white24,
-                              width: selected ? 2 : 1,
-                            ),
-                          ),
-                          child: SizedBox(
-                            width: 50,
-                            height: 60,
-                            child: _CarSprite(assetPath: e.value),
-                          ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    const Text('CAR GAME',
+                        style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900,
+                            letterSpacing: 2.2, color: Color(0xFFECEFF4))),
+                    const SizedBox(height: 32),
+                    const Text('HILI KARETA',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white70)),
+                    const SizedBox(height: 16),
+                    Center(
+                      child: Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 16,
+                        runSpacing: 16,
+                        children: List.generate(
+                          _playerCarOptions.length,
+                          (index) {
+                            final String carAsset = _playerCarOptions[index];
+                            final bool isSelected = carAsset == _selectedPlayerCarAsset;
+                            return GestureDetector(
+                              onTap: () => setState(() => _selectedPlayerCarAsset = carAsset),
+                              child: Container(
+                                width: 100,
+                                height: 100,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: isSelected ? const Color(0xFFE63946) : Colors.white24,
+                                    width: isSelected ? 3 : 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                  color: isSelected ? const Color(0xFF2B313B) : const Color(0xFF1C2330),
+                                ),
+                                child: Image.asset(carAsset, fit: BoxFit.contain),
+                              ),
+                            );
+                          },
                         ),
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _startGame,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFFE63946),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      child: const Text('HAHU JOGU',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 32),
+                    TextField(
+                      controller: _nameController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'INSERE NARAN',
+                        labelStyle: const TextStyle(color: Colors.white60),
+                        errorText: _nameValidationMessage,
+                        filled: true, fillColor: const Color(0xFF1C2330),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: _startGame,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFE63946),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        child: const Text('HAHU JOGU',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -312,79 +518,52 @@ class _RacingGamePageState extends State<RacingGamePage>
   }
 }
 
-//  _CarSprite - renders a car image from assets
 class _CarSprite extends StatelessWidget {
   const _CarSprite({required this.assetPath});
   final String assetPath;
-
   @override
-  Widget build(BuildContext context) {
-    return Image.asset(assetPath, fit: BoxFit.contain);
-  }
+  Widget build(BuildContext context) => Image.asset(assetPath, fit: BoxFit.contain);
 }
 
-//  _RoadLayer - Custom painter that tiles and scrolls the road background
 class _RoadLayer extends StatelessWidget {
   const _RoadLayer({required this.offset});
   final double offset;
-
   @override
-  Widget build(BuildContext context) {
-    return CustomPaint(painter: _RoadPainter(offset: offset));
-  }
+  Widget build(BuildContext context) => CustomPaint(painter: _RoadPainter(offset: offset));
 }
 
 class _RoadPainter extends CustomPainter {
   const _RoadPainter({required this.offset});
   final double offset;
-
   @override
   void paint(Canvas canvas, Size size) {
-    //  Draw a simple dark road rectangle
-    final Paint roadPaint = Paint()..color = const Color(0xFF1A1F28);
-    canvas.drawRect(Offset.zero & size, roadPaint);
-
-    //  Draw dashed lane dividers that scroll with offset
-    final Paint dashPaint = Paint()
-      ..color = Colors.white24
-      ..strokeWidth = 2;
-
-    const int laneCount = 4;
-    for (int i = 1; i < laneCount; i++) {
-      final double x = size.width * i / laneCount;
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF1A1F28));
+    final Paint p = Paint()..color = Colors.white24..strokeWidth = 2;
+    for (int i = 1; i < 4; i++) {
+      final double x = size.width * i / 4;
       double y = -(offset % 40);
-      while (y < size.height) {
-        canvas.drawLine(Offset(x, y), Offset(x, y + 20), dashPaint);
-        y += 40;
-      }
+      while (y < size.height) { canvas.drawLine(Offset(x, y), Offset(x, y + 20), p); y += 40; }
     }
   }
-
   @override
-  bool shouldRepaint(covariant _RoadPainter oldDelegate) =>
-      oldDelegate.offset != offset;
+  bool shouldRepaint(covariant _RoadPainter old) => old.offset != offset;
 }
 
-//  _ControlButton - circular left/right arrow buttons for steering
 class _ControlButton extends StatelessWidget {
   const _ControlButton({required this.icon, required this.onPressed});
   final IconData icon;
   final VoidCallback onPressed;
-
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onPressed,
-      borderRadius: BorderRadius.circular(26),
+      onTap: onPressed, borderRadius: BorderRadius.circular(26),
       child: Ink(
-        width: 70,
-        height: 70,
+        width: 70, height: 70,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           gradient: const LinearGradient(
             colors: <Color>[Color(0xFF2B313B), Color(0xFF191E26)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+            begin: Alignment.topLeft, end: Alignment.bottomRight,
           ),
           border: Border.all(color: Colors.white.withOpacity(0.24)),
         ),
