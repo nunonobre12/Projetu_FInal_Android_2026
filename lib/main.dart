@@ -26,23 +26,15 @@ class RacingGameApp extends StatelessWidget {
 
 enum _GameView { menu, playing }
 
-
 class _LeaderboardEntry {
   const _LeaderboardEntry({required this.playerName, required this.bestScore});
   final String playerName;
   final int bestScore;
-
-  
-  factory _LeaderboardEntry.fromMap(Map<String, dynamic> map) => _LeaderboardEntry(
-        playerName: (map['playerName'] ?? '').toString(),
-        bestScore: (map['bestScore'] as num?)?.toInt() ?? 0,
-      );
-
-  
-  Map<String, dynamic> toMap() => <String, dynamic>{
-        'playerName': playerName,
-        'bestScore': bestScore,
-      };
+  factory _LeaderboardEntry.fromMap(Map<String, dynamic> map) =>
+      _LeaderboardEntry(playerName: (map['playerName'] ?? '').toString(),
+          bestScore: (map['bestScore'] as num?)?.toInt() ?? 0);
+  Map<String, dynamic> toMap() =>
+      <String, dynamic>{'playerName': playerName, 'bestScore': bestScore};
 }
 
 class _EnemyCar {
@@ -82,7 +74,10 @@ class _RacingGamePageState extends State<RacingGamePage>
   static const String _crashSfxAsset      = 'audio/crash.wav';
   static const String _buttonTapSfxAsset  = 'audio/button_tap.wav';
   static const String _steerSfxAsset      = 'audio/steer.wav';
-  //  SharedPreferences key for leaderboard JSON
+  //  SFX for pause, countdown beep, and countdown GO
+  static const String _pauseSfxAsset      = 'audio/pause.wav';
+  static const String _resumeBeepSfxAsset = 'audio/resume_beep.wav';
+  static const String _resumeGoSfxAsset   = 'audio/resume_go.wav';
   static const String _leaderboardPrefsKey = 'leaderboard_v1';
 
   final Random _random = Random();
@@ -92,8 +87,6 @@ class _RacingGamePageState extends State<RacingGamePage>
   final AudioPlayer _enginePlayer = AudioPlayer();
   final AudioPlayer _sfxPlayer    = AudioPlayer();
   final AudioPlayer _sfxAltPlayer = AudioPlayer();
-
-  //  SharedPreferences instance (lazy-initialised)
   SharedPreferences? _prefs;
 
   _GameView _view = _GameView.menu;
@@ -116,15 +109,14 @@ class _RacingGamePageState extends State<RacingGamePage>
   String _activePlayerName = '';
   int _score = 0;
   int _bestScore = 0;
-
-  //  Leaderboard state
   List<_LeaderboardEntry> _leaderboard = <_LeaderboardEntry>[];
-  //  Dirty flag — true when unsaved changes exist
   bool _leaderboardDirty = false;
-
   bool _isGameOver = false;
   bool _isCrashing = false;
   double _crashFxTime = 0;
+  //  Pause and resume countdown state
+  bool _isPaused = false;
+  double _resumeCountdown = 0;
   String _selectedPlayerCarAsset = _playerCarOptions.first;
 
   @override
@@ -133,13 +125,11 @@ class _RacingGamePageState extends State<RacingGamePage>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update)..forward();
     unawaited(_initAudio());
-    //  Load saved leaderboard from disk on startup
     unawaited(_loadLeaderboard());
   }
 
   @override
   void dispose() {
-    //  Flush any unsaved leaderboard data before the widget is destroyed
     if (_leaderboardDirty) unawaited(_saveLeaderboard());
     _nameController.dispose();
     _musicPlayer.dispose(); _enginePlayer.dispose();
@@ -148,7 +138,6 @@ class _RacingGamePageState extends State<RacingGamePage>
     super.dispose();
   }
 
-  //  Read leaderboard JSON from SharedPreferences and parse it
   Future<void> _loadLeaderboard() async {
     try {
       _prefs ??= await SharedPreferences.getInstance();
@@ -167,17 +156,15 @@ class _RacingGamePageState extends State<RacingGamePage>
     } catch (_) {}
   }
 
-  //  Serialise and persist the leaderboard to SharedPreferences
   Future<void> _saveLeaderboard() async {
     try {
       _prefs ??= await SharedPreferences.getInstance();
-      final String raw = jsonEncode(_leaderboard.map((e) => e.toMap()).toList());
-      await _prefs!.setString(_leaderboardPrefsKey, raw);
+      await _prefs!.setString(_leaderboardPrefsKey,
+          jsonEncode(_leaderboard.map((e) => e.toMap()).toList()));
       _leaderboardDirty = false;
     } catch (_) {}
   }
 
-  //  Update or insert the active player's score in the leaderboard
   void _recordScoreForActivePlayer() {
     if (_activePlayerName.trim().isEmpty) return;
     final String player = _activePlayerName.trim();
@@ -201,70 +188,9 @@ class _RacingGamePageState extends State<RacingGamePage>
     }
   }
 
-  //  Clear all leaderboard entries from memory and disk
   Future<void> _clearLeaderboard() async {
     setState(() { _leaderboard = <_LeaderboardEntry>[]; _leaderboardDirty = true; });
     await _saveLeaderboard();
-  }
-
-  //  Show modal dialog with the top-30 leaderboard
-  Future<void> _openLeaderboardDialog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (BuildContext ctx) => StatefulBuilder(
-        builder: (context, setSt) => AlertDialog(
-          backgroundColor: const Color(0xFF151920),
-          title: const Text('Leaderboard',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-          content: SizedBox(
-            width: 360,
-            child: _leaderboard.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text('Seidauk iha pontus. Hahu lai jogu hodi hetan pontus.',
-                        style: TextStyle(color: Colors.white70)))
-                : ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 360),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: _leaderboard.length,
-                      separatorBuilder: (_, __) =>
-                          Divider(color: Colors.white.withOpacity(0.12), height: 12),
-                      itemBuilder: (_, int i) {
-                        final _LeaderboardEntry entry = _leaderboard[i];
-                        return Row(children: <Widget>[
-                          SizedBox(width: 28,
-                            child: Text('${i + 1}', style: const TextStyle(color: Colors.white60, fontWeight: FontWeight.w700))),
-                          Expanded(child: Text(entry.playerName,
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-                              overflow: TextOverflow.ellipsis)),
-                          const SizedBox(width: 12),
-                          Text('${entry.bestScore}',
-                              style: const TextStyle(color: Color(0xFFFFBE0B), fontWeight: FontWeight.w900)),
-                        ]);
-                      },
-                    ),
-                  ),
-          ),
-          actions: <Widget>[
-            TextButton.icon(
-              onPressed: _leaderboard.isEmpty ? null : () async {
-                await _clearLeaderboard();
-                if (!context.mounted) return;
-                setSt(() {});
-              },
-              icon: const Icon(Icons.delete_forever_rounded),
-              label: const Text('Clear'),
-              style: TextButton.styleFrom(foregroundColor: const Color(0xFFE63946)),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> _initAudio() async {
@@ -284,8 +210,8 @@ class _RacingGamePageState extends State<RacingGamePage>
     } catch (_) {}
   }
 
-  void _setMasterVolume(double value) {
-    setState(() => _masterVolume = value.clamp(0.0, 1.0));
+  void _setMasterVolume(double v) {
+    setState(() => _masterVolume = v.clamp(0.0, 1.0));
     unawaited(_applyMasterVolume());
   }
 
@@ -337,10 +263,8 @@ class _RacingGamePageState extends State<RacingGamePage>
       return;
     }
     setState(() {
-      _activePlayerName = username;
-      _nameValidationMessage = null;
-      _view = _GameView.playing;
-      _resetState();
+      _activePlayerName = username; _nameValidationMessage = null;
+      _view = _GameView.playing; _resetState();
     });
     unawaited(_playSfx(_buttonTapSfxAsset, volume: 0.8));
     unawaited(_setMusicTrack(_gameplayMusicAsset, volume: 0.42));
@@ -348,7 +272,12 @@ class _RacingGamePageState extends State<RacingGamePage>
   }
 
   void _backToMenu() {
-    setState(() { _view = _GameView.menu; _isGameOver = false; _isCrashing = false; _enemies.clear(); _playerX = 0; });
+    setState(() {
+      _view = _GameView.menu; _isGameOver = false; _isCrashing = false;
+      //  Clear pause state when returning to menu
+      _isPaused = false; _resumeCountdown = 0;
+      _enemies.clear(); _playerX = 0;
+    });
     unawaited(_playSfx(_buttonTapSfxAsset, volume: 0.8));
     unawaited(_stopEngineLoop());
     unawaited(_setMusicTrack(_menuMusicAsset, volume: 0.44));
@@ -367,6 +296,25 @@ class _RacingGamePageState extends State<RacingGamePage>
     _elapsed = _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
     _smoothedDt = 0.016; _steerSfxCooldown = 0;
     _score = 0; _isGameOver = false; _isCrashing = false; _crashFxTime = 0;
+    //  Reset pause flags on every new game
+    _isPaused = false; _resumeCountdown = 0;
+  }
+
+  //  Pause the game — stops music, engine, and shows the pause overlay
+  void _pauseGame() {
+    if (_isGameOver || _isCrashing || _view != _GameView.playing || _resumeCountdown > 0) return;
+    setState(() => _isPaused = true);
+    unawaited(_playSfx(_pauseSfxAsset, volume: 0.8));
+    unawaited(_stopMusic());
+    unawaited(_stopEngineLoop());
+  }
+
+  //  Resume the game with a 3-second countdown before unpausing
+  void _resumeWithCountdown() {
+    if (_view != _GameView.playing || !_isPaused || _isGameOver) return;
+    setState(() { _isPaused = false; _resumeCountdown = 3; });
+    unawaited(_playSfx(_buttonTapSfxAsset, volume: 0.8));
+    unawaited(_playSfx(_resumeBeepSfxAsset, volume: 0.8, useAlt: true));
   }
 
   void _update() {
@@ -376,13 +324,36 @@ class _RacingGamePageState extends State<RacingGamePage>
     _smoothedDt = _smoothedDt * 0.82 + rawDt * 0.18;
     final double dt = _smoothedDt.clamp(0.0, 0.033);
     _elapsed = now;
+
     if (!mounted || _view != _GameView.playing || _isGameOver) return;
+
     if (_isCrashing) {
       _crashFxTime = max(0, _crashFxTime - dt);
       if (_crashFxTime <= 0) _finishGameOver();
       if (now - _lastPaintMicros >= 16000) { _lastPaintMicros = now; setState(() {}); }
       return;
     }
+
+    //  Tick the resume countdown; fire beep/GO sounds at each second
+    if (_resumeCountdown > 0) {
+      final int prevTick = _resumeCountdown.ceil();
+      _resumeCountdown = max(0, _resumeCountdown - dt);
+      final int newTick = _resumeCountdown.ceil();
+      if (newTick < prevTick && newTick > 0) {
+        unawaited(_playSfx(_resumeBeepSfxAsset, volume: 0.78, useAlt: true));
+      }
+      if (newTick == 0 && prevTick > 0) {
+        unawaited(_playSfx(_resumeGoSfxAsset, volume: 0.86, useAlt: true));
+        unawaited(_setMusicTrack(_gameplayMusicAsset, volume: 0.42));
+        unawaited(_startEngineLoop());
+      }
+      if (now - _lastPaintMicros >= 16000) { _lastPaintMicros = now; setState(() {}); }
+      return;
+    }
+
+    //  Do nothing while paused
+    if (_isPaused) return;
+
     _survivalTime += dt;
     _steerSfxCooldown = max(0, _steerSfxCooldown - dt);
     final double earlyRamp = (_survivalTime / 18).clamp(0.0, 1.0);
@@ -402,7 +373,8 @@ class _RacingGamePageState extends State<RacingGamePage>
 
   double _nextSpawnDelay() {
     final double ea = _survivalTime < 15 ? (15 - _survivalTime) / 15 : 0;
-    return (max(0.24, 0.82 - _pacedDifficulty() * 0.28)) * (0.9 + _random.nextDouble() * 0.34) + ea * 0.22;
+    return (max(0.24, 0.82 - _pacedDifficulty() * 0.28)) *
+        (0.9 + _random.nextDouble() * 0.34) + ea * 0.22;
   }
 
   void _spawnEnemyWave() {
@@ -436,7 +408,7 @@ class _RacingGamePageState extends State<RacingGamePage>
 
   void _triggerCrashEffect() {
     if (_isCrashing || _isGameOver) return;
-    setState(() { _isCrashing = true; _crashFxTime = 0.72; });
+    setState(() { _isCrashing = true; _crashFxTime = 0.72; _isPaused = false; _resumeCountdown = 0; });
     unawaited(_stopEngineLoop()); unawaited(_stopMusic());
     unawaited(_playSfx(_crashSfxAsset, volume: 1, useAlt: true));
   }
@@ -444,14 +416,15 @@ class _RacingGamePageState extends State<RacingGamePage>
   void _finishGameOver() {
     setState(() {
       _isGameOver = true; _isCrashing = false; _crashFxTime = 0;
+      _isPaused = false; _resumeCountdown = 0;
       _bestScore = max(_bestScore, _score);
-      //  Save the player's score to the leaderboard on game over
       _recordScoreForActivePlayer();
     });
   }
 
   void _steer(double delta) {
-    if (_isGameOver || _isCrashing || _view != _GameView.playing) return;
+    if (_isGameOver || _isCrashing || _view != _GameView.playing ||
+        _isPaused || _resumeCountdown > 0) return;
     if (_steerSfxCooldown <= 0) {
       _steerSfxCooldown = 0.08;
       unawaited(_playSfx(_steerSfxAsset, volume: 0.2, useAlt: true));
@@ -468,62 +441,59 @@ class _RacingGamePageState extends State<RacingGamePage>
         onPanUpdate: (d) => _steer(d.delta.dx / c.maxWidth * 2.2),
         child: Stack(children: <Widget>[
           Positioned.fill(child: _RoadLayer(offset: _roadOffset)),
-          ..._enemies.map((e) => _buildEnemy(e, c)),
+          ..._enemies.map((e) => _buildEnemy(e)),
           _buildPlayerCar(),
           _buildHud(),
+          if (_isCrashing) _buildCrashOverlay(),
           if (_isGameOver) _buildGameOverOverlay(),
+          //  Pause and countdown overlays
+          if (_isPaused) _buildPauseOverlay(),
+          if (_resumeCountdown > 0) _buildResumeCountdownOverlay(),
           _buildTouchControls(),
         ]),
       )),
     );
   }
 
-  Widget _buildEnemy(_EnemyCar e, BoxConstraints c) {
-    final double cw = c.maxWidth * _enemyWidthFactor;
-    final double ch = c.maxHeight * _enemyHeightFactor;
-    return Positioned(
-      left: c.maxWidth / 2 + e.x * c.maxWidth / 2 - cw / 2,
-      top:  c.maxHeight / 2 + e.y * c.maxHeight / 2 - ch / 2,
-      width: cw, height: ch,
-      child: _CarSprite(assetPath: e.assetPath),
-    );
-  }
+  Widget _buildEnemy(_EnemyCar e) => Align(
+    alignment: Alignment(e.x, e.y),
+    child: FractionallySizedBox(widthFactor: _enemyWidthFactor, heightFactor: _enemyHeightFactor,
+        child: _CarSprite(assetPath: e.assetPath)),
+  );
 
-  Widget _buildPlayerCar() => LayoutBuilder(builder: (context, c) {
-    final double cw = c.maxWidth * _playerWidthFactor;
-    final double ch = c.maxHeight * _playerHeightFactor;
-    return Positioned(
-      left: c.maxWidth / 2 + _playerX * c.maxWidth / 2 - cw / 2,
-      top:  c.maxHeight * 0.79 - ch / 2,
-      width: cw, height: ch,
-      child: _CarSprite(assetPath: _selectedPlayerCarAsset),
-    );
-  });
+  Widget _buildPlayerCar() => Align(
+    alignment: Alignment(_playerX, 0.79),
+    child: FractionallySizedBox(widthFactor: _playerWidthFactor, heightFactor: _playerHeightFactor,
+        child: _CarSprite(assetPath: _selectedPlayerCarAsset)),
+  );
 
   Widget _buildHud() => Positioned(
-    top: 16, left: 16,
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-      Text('Score: $_score', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
-      Text('Best: $_bestScore', style: const TextStyle(color: Color(0xFFFFBE0B), fontSize: 14)),
+    top: 10, left: 12, right: 12,
+    child: Row(children: <Widget>[
+      Text('Score: $_score', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+      const Spacer(),
+      //  Pause button in the HUD
+      IconButton(
+        onPressed: _pauseGame,
+        icon: const Icon(Icons.pause_rounded, color: Colors.white, size: 28),
+      ),
     ]),
+  );
+
+  Widget _buildCrashOverlay() => Positioned.fill(
+    child: Container(color: Colors.redAccent.withOpacity(0.35)),
   );
 
   Widget _buildGameOverOverlay() => Positioned.fill(
     child: Container(color: Colors.black54, child: Center(child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        const Text('GAME OVER', style: TextStyle(color: Colors.red, fontSize: 36, fontWeight: FontWeight.w900)),
-        const SizedBox(height: 12),
-        Text('Score: $_score', style: const TextStyle(color: Colors.white, fontSize: 24)),
-        const SizedBox(height: 24),
-        ElevatedButton(onPressed: _resetGame, child: const Text('Play Again')),
+        const Text('SOKE!', style: TextStyle(color: Color(0xFFFFBE0B), fontSize: 34, fontWeight: FontWeight.w900)),
         const SizedBox(height: 8),
-        //  View leaderboard button on game over screen
-        OutlinedButton(
-          onPressed: _openLeaderboardDialog,
-          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFFFBE0B)),
-          child: const Text('Leaderboard'),
-        ),
+        Text('Score: $_score', style: const TextStyle(color: Colors.white, fontSize: 20)),
+        const SizedBox(height: 20),
+        ElevatedButton.icon(onPressed: _resetGame, icon: const Icon(Icons.replay_rounded),
+            label: const Text('Play Again')),
         const SizedBox(height: 8),
         OutlinedButton(onPressed: _backToMenu,
             style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
@@ -532,70 +502,99 @@ class _RacingGamePageState extends State<RacingGamePage>
     ))),
   );
 
-  Widget _buildTouchControls() => Positioned(
-    left: 0, right: 0, bottom: 24,
-    child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: <Widget>[
-      _ControlButton(icon: Icons.arrow_left_rounded, onPressed: () => _steer(-0.12)),
-      _ControlButton(icon: Icons.arrow_right_rounded, onPressed: () => _steer(0.12)),
-    ]),
+  //  Pause overlay — dims the screen and shows a resume button
+  Widget _buildPauseOverlay() => Positioned.fill(
+    child: Container(
+      color: Colors.black.withOpacity(0.7),
+      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+        const Text('PAUSED', style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: _resumeWithCountdown,
+          icon: const Icon(Icons.play_arrow_rounded),
+          label: const Text('RESUME'),
+          style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2ECC71)),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton(onPressed: _backToMenu,
+            style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+            child: const Text('Main Menu')),
+      ])),
+    ),
   );
 
-  Widget _buildMenu() {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: <Color>[Color(0xFF151A22), Color(0xFF0E1218), Color(0xFF171D25)],
-            stops: <double>[0.0, 0.5, 1.0]),
-        ),
-        child: SafeArea(child: Center(child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
-            const Text('CAR GAME', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900,
-                letterSpacing: 2.2, color: Color(0xFFECEFF4))),
-            const SizedBox(height: 32),
-            TextField(
-              controller: _nameController,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                labelText: 'Naran Ita-nia', labelStyle: const TextStyle(color: Colors.white60),
-                errorText: _nameValidationMessage, filled: true, fillColor: const Color(0xFF1C2330),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(children: <Widget>[
-              const Icon(Icons.volume_up, color: Colors.white60),
-              Expanded(child: Slider(value: _masterVolume, onChanged: _setMasterVolume,
-                  activeColor: const Color(0xFFE63946))),
-            ]),
-            const SizedBox(height: 12),
-            SizedBox(width: double.infinity, child: FilledButton(
-              onPressed: _startGame,
-              style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE63946),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-              child: const Text('HAHU JOGU',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
-            )),
-            const SizedBox(height: 12),
-            //  Leaderboard button on the main menu
-            SizedBox(width: double.infinity, child: OutlinedButton.icon(
-              onPressed: _openLeaderboardDialog,
-              style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFFFBE0B),
-                side: const BorderSide(color: Color(0xFFFFBE0B)),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-              icon: const Icon(Icons.emoji_events_rounded),
-              label: const Text('Leaderboard',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-            )),
-          ]),
-        ))),
+  //  Countdown overlay — shows 3, 2, 1 then GO before unpausing
+  Widget _buildResumeCountdownOverlay() {
+    final int count = _resumeCountdown.ceil();
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withOpacity(0.55),
+        child: Center(child: Text(
+          count > 0 ? '$count' : 'GO!',
+          style: const TextStyle(color: Colors.white, fontSize: 72, fontWeight: FontWeight.w900),
+        )),
       ),
     );
   }
+
+  Widget _buildTouchControls() {
+    //  Hide controls while paused or in countdown
+    if (_isGameOver || _isCrashing || _isPaused || _resumeCountdown > 0) {
+      return const SizedBox.shrink();
+    }
+    return Positioned(
+      left: 0, right: 0, bottom: 24,
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: <Widget>[
+        _ControlButton(icon: Icons.arrow_left_rounded, onPressed: () => _steer(-0.12)),
+        _ControlButton(icon: Icons.arrow_right_rounded, onPressed: () => _steer(0.12)),
+      ]),
+    );
+  }
+
+  Widget _buildMenu() => Scaffold(
+    body: Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
+          colors: <Color>[Color(0xFF151A22), Color(0xFF0E1218), Color(0xFF171D25)],
+          stops: <double>[0.0, 0.5, 1.0]),
+      ),
+      child: SafeArea(child: Center(child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
+          const Text('CAR GAME', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900,
+              letterSpacing: 2.2, color: Color(0xFFECEFF4))),
+          const SizedBox(height: 32),
+          TextField(
+            controller: _nameController,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: 'Naran Ita-nia', labelStyle: const TextStyle(color: Colors.white60),
+              errorText: _nameValidationMessage, filled: true, fillColor: const Color(0xFF1C2330),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(children: <Widget>[
+            const Icon(Icons.volume_up, color: Colors.white60),
+            Expanded(child: Slider(value: _masterVolume, onChanged: _setMasterVolume,
+                activeColor: const Color(0xFFE63946))),
+          ]),
+          const SizedBox(height: 12),
+          SizedBox(width: double.infinity, child: FilledButton(
+            onPressed: _startGame,
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE63946),
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+            child: const Text('HAHU JOGU',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
+          )),
+        ]),
+      ))),
+    ),
+  );
 }
+
+// --- Shared Widgets ---
 
 class _CarSprite extends StatelessWidget {
   const _CarSprite({required this.assetPath});
