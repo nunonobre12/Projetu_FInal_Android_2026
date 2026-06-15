@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:ui' show lerpDouble;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -83,7 +84,6 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
   double _baseSpeed = 0.44;
   double _difficulty = 0;
   double _spawnTimer = 0;
-  // . Timer that fires _enforceEnemyLaneSpacing every 50ms
   double _laneSpacingSolveTimer = 0;
   double _lastPaintMicros = 0;
   double _survivalTime = 0;
@@ -93,12 +93,11 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
   double _musicMixVolume = 0.44;
   final double _engineMixVolume = 0.3;
   double _steerSfxCooldown = 0;
-  // . Tracks consecutive time spent in the same lane (anti-camping)
   double _laneHoldTime = 0;
-  // . Cooldown so lane-pressure spawn doesn't fire every frame
   double _lanePressureCooldown = 0;
-  // . The lane index the player was in on the previous frame
   int _lastPlayerLane = 0;
+  // [. Guard so precacheImage runs only once
+  bool _assetsWarmedUp = false;
   String? _currentMusicAsset;
   bool _isEngineLooping = false;
   String? _nameValidationMessage;
@@ -110,6 +109,8 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
   bool _isGameOver = false;
   bool _isCrashing = false;
   double _crashFxTime = 0;
+  // [. X position at the moment of crash — used to position the crash flash
+  double _crashAtX = 0;
   bool _isPaused = false;
   double _resumeCountdown = 0;
   String _selectedPlayerCarAsset = _playerCarOptions.first;
@@ -131,6 +132,20 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
     _sfxPlayer.dispose(); _sfxAltPlayer.dispose();
     _ticker.dispose();
     super.dispose();
+  }
+
+  // [. Precache all image assets when the widget tree is ready
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_assetsWarmedUp) return;
+    _assetsWarmedUp = true;
+    final List<String> assets = <String>[
+      'assets/images/road_tile.png', // [. road tile now in assets
+      ..._playerCarOptions,
+      ..._enemyCarOptions,
+    ];
+    for (final String asset in assets) precacheImage(AssetImage(asset), context);
   }
 
   Future<void> _loadLeaderboard() async {
@@ -195,7 +210,6 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
     try { await _musicPlayer.setVolume(_scaledVolume(_musicMixVolume)); await _enginePlayer.setVolume(_scaledVolume(_engineMixVolume)); } catch (_) {}
   }
   void _setMasterVolume(double v) { setState(() => _masterVolume = v.clamp(0.0, 1.0)); unawaited(_applyMasterVolume()); }
-
   Future<void> _setMusicTrack(String asset, {required double volume}) async {
     _musicMixVolume = volume;
     if (_currentMusicAsset == asset) { await _musicPlayer.setVolume(_scaledVolume(_musicMixVolume)); return; }
@@ -204,8 +218,7 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
   }
   Future<void> _stopMusic() async { _currentMusicAsset = null; try { await _musicPlayer.stop(); } catch (_) {} }
   Future<void> _startEngineLoop() async {
-    if (_isEngineLooping) return;
-    _isEngineLooping = true;
+    if (_isEngineLooping) return; _isEngineLooping = true;
     try { await _enginePlayer.setVolume(_scaledVolume(_engineMixVolume)); await _enginePlayer.play(AssetSource(_engineLoopAsset)); } catch (_) {}
   }
   Future<void> _stopEngineLoop() async { _isEngineLooping = false; try { await _enginePlayer.stop(); } catch (_) {} }
@@ -224,7 +237,7 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
   }
 
   void _backToMenu() {
-    setState(() { _view = _GameView.menu; _isGameOver = false; _isCrashing = false; _isPaused = false; _resumeCountdown = 0; _enemies.clear(); _playerX = 0; });
+    setState(() { _view = _GameView.menu; _isGameOver = false; _isCrashing = false; _crashFxTime = 0; _isPaused = false; _resumeCountdown = 0; _enemies.clear(); _playerX = 0; });
     unawaited(_playSfx(_buttonTapSfxAsset, volume: 0.8));
     unawaited(_stopEngineLoop());
     unawaited(_setMusicTrack(_menuMusicAsset, volume: 0.44));
@@ -239,14 +252,14 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
 
   void _resetState() {
     _enemies.clear(); _playerX = 0; _roadOffset = 0; _baseSpeed = 0.5;
-    _difficulty = 0; _spawnTimer = 0.62;
-    // . Reset all V7 timers on game reset
-    _laneSpacingSolveTimer = 0; _laneHoldTime = 0; _lanePressureCooldown = 0;
-    _lastPlayerLane = _playerLaneIndex();
+    _difficulty = 0; _spawnTimer = 0.62; _laneSpacingSolveTimer = 0;
     _lastPaintMicros = 0; _survivalTime = 0;
     _elapsed = _ticker.lastElapsedDuration?.inMicroseconds.toDouble() ?? 0;
     _smoothedDt = 0.016; _steerSfxCooldown = 0;
+    _laneHoldTime = 0; _lanePressureCooldown = 0;
+    _lastPlayerLane = _playerLaneIndex();
     _score = 0; _isGameOver = false; _isCrashing = false; _crashFxTime = 0;
+    _crashAtX = _playerX; // [.
     _isPaused = false; _resumeCountdown = 0;
   }
 
@@ -295,26 +308,18 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
 
     _survivalTime += dt;
     _steerSfxCooldown = max(0, _steerSfxCooldown - dt);
-    // . Track how long the player stays in the same lane
     _lanePressureCooldown = max(0, _lanePressureCooldown - dt);
     final int curLane = _playerLaneIndex();
-    if (curLane == _lastPlayerLane) { _laneHoldTime += dt; }
-    else { _lastPlayerLane = curLane; _laneHoldTime = 0; }
-
+    if (curLane == _lastPlayerLane) { _laneHoldTime += dt; } else { _lastPlayerLane = curLane; _laneHoldTime = 0; }
     final double earlyRamp = (_survivalTime / 18).clamp(0.0, 1.0);
     _difficulty += dt * (0.032 + 0.03 * earlyRamp);
     final double speed = _baseSpeed + _pacedDifficulty() * (0.56 + earlyRamp * 0.34 + _pacedDifficulty() * 0.4);
     _roadOffset += dt * (1.18 + speed * (1.58 + earlyRamp * 0.56));
     for (final _EnemyCar e in _enemies) { e.y += dt * (0.72 + e.speedBoost + speed * (1.7 + earlyRamp * 0.48)); }
-
-    // . Periodically enforce minimum spacing between cars in the same lane
     _laneSpacingSolveTimer -= dt;
     if (_laneSpacingSolveTimer <= 0) { _enforceEnemyLaneSpacing(); _laneSpacingSolveTimer = 0.05; }
-
     _enemies.removeWhere((e) => e.y > 1.3);
-    // . Hard cap on enemy list size to prevent unbounded growth
     if (_enemies.length > 20) _enemies.removeRange(0, _enemies.length - 20);
-
     _spawnTimer -= dt;
     if (_spawnTimer <= 0) { _spawnEnemyWave(); _spawnTimer = _nextSpawnDelay(); }
     _score += (dt * 90 * (1 + _difficulty)).round();
@@ -329,42 +334,23 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
     return (max(0.24, 0.82 - _pacedDifficulty() * 0.28)) * (0.9 + _random.nextDouble() * 0.34) + ea * 0.22;
   }
 
-  // . Enhanced wave spawner: targets player lane + lane-camp pressure + multi-wave
   void _spawnEnemyWave() {
-    final double diff = _pacedDifficulty();
-    // . Double wave at high difficulty with 20% chance
     int waveCount = 1;
-    if (_survivalTime > 16 && diff > 0.98 && _random.nextDouble() < 0.2) waveCount = 2;
-
+    if (_survivalTime > 16 && _pacedDifficulty() > 0.98 && _random.nextDouble() < 0.2) waveCount = 2;
     final int playerLane = _playerLaneIndex();
     int spawned = 0;
-
-    // . Always try to put one car in the player's lane
-    if (_canSpawnInLane(playerLane)) {
-      _spawnEnemyOnPlayerPath(); spawned++;
-    }
-
-    // . Extra spawn when the player has been camping the same lane too long
+    if (_canSpawnInLane(playerLane)) { _spawnEnemyOnPlayerPath(); spawned++; }
     final double pressure = ((_laneHoldTime - 4.2) / 3.8).clamp(0.0, 1.0);
     if (pressure > 0 && _lanePressureCooldown <= 0 && spawned < waveCount &&
         _canSpawnInLane(playerLane) && _random.nextDouble() < (0.58 + pressure * 0.26)) {
-      _spawnEnemyOnPlayerPath();
-      _lanePressureCooldown = 1.3;
-      spawned++;
+      _spawnEnemyOnPlayerPath(); _lanePressureCooldown = 1.3; spawned++;
     }
-
     final List<int> lanes = List.generate(_laneCount, (i) => i)..shuffle(_random);
     for (final int lane in lanes) {
       if (spawned >= waveCount) break;
       if (_canSpawnInLane(lane)) { _spawnEnemyInLane(lane); spawned++; }
     }
-
-    // . Guarantee at least one enemy per wave
-    if (spawned == 0) {
-      for (final int lane in lanes) {
-        if (_canSpawnInLane(lane)) { _spawnEnemyInLane(lane); break; }
-      }
-    }
+    if (spawned == 0) { for (final int lane in lanes) { if (_canSpawnInLane(lane)) { _spawnEnemyInLane(lane); break; } } }
   }
 
   bool _canSpawnInLane(int lane) {
@@ -372,84 +358,50 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
     final double minGap = max(0.3, 0.64 - _pacedDifficulty() * 0.16);
     return !_enemies.any((e) => e.lane == lane && e.y < -0.35 && (e.y - spawnY).abs() < minGap);
   }
-
-  // . Minimum vertical gap between cars in the same lane (shrinks with difficulty)
   double _laneTrafficSpacing() => max(0.22, 0.34 - _pacedDifficulty() * 0.06);
-
-  // . Push back-cars up if they are too close to the car in front (same lane)
   void _enforceEnemyLaneSpacing() {
-    final double minSpacing = _laneTrafficSpacing();
+    final double ms = _laneTrafficSpacing();
     for (int lane = 0; lane < _laneCount; lane++) {
-      final List<_EnemyCar> lc = _enemies.where((e) => e.lane == lane).toList()
-        ..sort((a, b) => b.y.compareTo(a.y));
+      final List<_EnemyCar> lc = _enemies.where((e) => e.lane == lane).toList()..sort((a, b) => b.y.compareTo(a.y));
       for (int i = 1; i < lc.length; i++) {
-        final _EnemyCar front = lc[i - 1];
-        final _EnemyCar back  = lc[i];
-        final double maxBackY = front.y - minSpacing;
-        if (back.y > maxBackY) back.y = maxBackY;
+        final double maxY = lc[i - 1].y - ms;
+        if (lc[i].y > maxY) lc[i].y = maxY;
       }
     }
   }
-
-  // . Convert normalised _playerX to a lane index (0–3)
-  int _playerLaneIndex() {
-    final double lw = 2 / _laneCount;
-    return (((_playerX + 1) / lw).floor()).clamp(0, _laneCount - 1);
-  }
-
-  // . Spawn an enemy directly in the player's current lane and X position
-  void _spawnEnemyOnPlayerPath() {
-    final int lane = _playerLaneIndex();
-    final double x = _playerX.clamp(-0.84, 0.84);
-    _spawnEnemyInLane(lane, xOverride: x);
-  }
-
-  // . Compute safe Y spawn position above any existing cars in this lane
+  int _playerLaneIndex() => (((_playerX + 1) / (2 / _laneCount)).floor()).clamp(0, _laneCount - 1);
+  void _spawnEnemyOnPlayerPath() { _spawnEnemyInLane(_playerLaneIndex(), xOverride: _playerX.clamp(-0.84, 0.84)); }
   double _spawnYForLane(int lane) {
-    const double baseY = -1.24;
     final List<_EnemyCar> lc = _enemies.where((e) => e.lane == lane).toList();
-    if (lc.isEmpty) return baseY;
-    final double topY = lc.map((e) => e.y).reduce((a, b) => a < b ? a : b);
-    return min(baseY, topY - _laneTrafficSpacing());
+    if (lc.isEmpty) return -1.24;
+    return min(-1.24, lc.map((e) => e.y).reduce((a, b) => a < b ? a : b) - _laneTrafficSpacing());
   }
-
   void _spawnEnemyInLane(int lane, {double? xOverride}) {
     final double lw = 2 / _laneCount;
-    final double x = xOverride ?? (-1 + lw * lane + lw / 2);
-    final double y = _spawnYForLane(lane);
-    _enemies.add(_EnemyCar(lane: lane, x: x, y: y,
+    _enemies.add(_EnemyCar(lane: lane, x: xOverride ?? (-1 + lw * lane + lw / 2), y: _spawnYForLane(lane),
         speedBoost: 0.04 + _random.nextDouble() * (0.34 + min(_pacedDifficulty() * 0.24, 0.3)),
         assetPath: _enemyCarOptions[_random.nextInt(_enemyCarOptions.length)]));
   }
-
-  Rect _playerHitBox() => Rect.fromCenter(center: Offset(_playerX, 0.79),
-      width: _playerWidthFactor * 0.86, height: _playerHeightFactor * 0.9).inflate(0.01);
-
-  Rect _enemyHitBox(_EnemyCar e) => Rect.fromCenter(center: Offset(e.x, e.y),
-      width: _enemyWidthFactor * 0.84, height: _enemyHeightFactor * 0.9).inflate(0.008);
-
+  Rect _playerHitBox() => Rect.fromCenter(center: Offset(_playerX, 0.79), width: _playerWidthFactor * 0.86, height: _playerHeightFactor * 0.9).inflate(0.01);
+  Rect _enemyHitBox(_EnemyCar e) => Rect.fromCenter(center: Offset(e.x, e.y), width: _enemyWidthFactor * 0.84, height: _enemyHeightFactor * 0.9).inflate(0.008);
   _EnemyCar? _findCollidingEnemy() {
     final Rect p = _playerHitBox();
     for (final _EnemyCar e in _enemies) { if (p.overlaps(_enemyHitBox(e))) return e; }
     return null;
   }
-
   void _triggerCrashEffect() {
     if (_isCrashing || _isGameOver) return;
-    setState(() { _isCrashing = true; _crashFxTime = 0.72; _isPaused = false; _resumeCountdown = 0; });
+    setState(() {
+      _isCrashing = true; _crashFxTime = 0.72;
+      _crashAtX = _playerX; // [. Remember crash position for the flash overlay
+      _isPaused = false; _resumeCountdown = 0;
+    });
     unawaited(_stopEngineLoop()); unawaited(_stopMusic());
     unawaited(_playSfx(_crashSfxAsset, volume: 1, useAlt: true));
   }
-
   void _finishGameOver() {
-    setState(() {
-      _isGameOver = true; _isCrashing = false; _crashFxTime = 0;
-      _isPaused = false; _resumeCountdown = 0;
-      _bestScore = max(_bestScore, _score);
-      _recordScoreForActivePlayer();
-    });
+    setState(() { _isGameOver = true; _isCrashing = false; _crashFxTime = 0; _isPaused = false; _resumeCountdown = 0; _bestScore = max(_bestScore, _score); _recordScoreForActivePlayer(); });
   }
-
   void _steer(double delta) {
     if (_isGameOver || _isCrashing || _view != _GameView.playing || _isPaused || _resumeCountdown > 0) return;
     if (_steerSfxCooldown <= 0) { _steerSfxCooldown = 0.08; unawaited(_playSfx(_steerSfxAsset, volume: 0.2, useAlt: true)); }
@@ -465,10 +417,16 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
         onPanUpdate: (d) => _steer(d.delta.dx / c.maxWidth * 2.2),
         child: Stack(children: <Widget>[
           Positioned.fill(child: _RoadLayer(offset: _roadOffset)),
+          // [. Speed lines layer rendered above the road, ignoring pointer events
+          Positioned.fill(child: IgnorePointer(child: _SpeedLinesLayer(
+            progress: _roadOffset,
+            intensity: (_pacedDifficulty() / 1.5).clamp(0.2, 1.0),
+          ))),
           ..._enemies.map((e) => _buildEnemy(e)),
           _buildPlayerCar(),
           _buildHud(),
-          if (_isCrashing) Positioned.fill(child: Container(color: Colors.redAccent.withOpacity(0.35))),
+          // .[ Crash flash overlay centred on the crash position
+          if (_isCrashing) _buildCrashEffectOverlay(),
           if (_isGameOver) _buildGameOverOverlay(),
           if (_isPaused) _buildPauseOverlay(),
           if (_resumeCountdown > 0) _buildResumeCountdownOverlay(),
@@ -484,22 +442,45 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
         child: _CarSprite(assetPath: e.assetPath)),
   );
 
+  // [. Player car rendered with a green glow
   Widget _buildPlayerCar() => Align(
     alignment: Alignment(_playerX, 0.79),
     child: FractionallySizedBox(widthFactor: _playerWidthFactor, heightFactor: _playerHeightFactor,
-        child: _CarSprite(assetPath: _selectedPlayerCarAsset)),
+        child: _CarSprite(assetPath: _selectedPlayerCarAsset, hasGlow: true)),
   );
 
+  // [. HUD now uses styled _HudChip widgets instead of plain Text
   Widget _buildHud() => Positioned(
     top: 10, left: 12, right: 12,
     child: Row(children: <Widget>[
-      Text('Score: $_score', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
-      const SizedBox(width: 16),
-      Text('Best: $_bestScore', style: const TextStyle(color: Color(0xFFFFBE0B), fontSize: 14)),
+      _HudChip(label: 'PONTUS', value: '$_score'),
+      const SizedBox(width: 8),
+      _HudChip(label: 'PONTUS AAS', value: '$_bestScore'),
       const Spacer(),
-      IconButton(onPressed: _pauseGame, icon: const Icon(Icons.pause_rounded, color: Colors.white, size: 28)),
+      _HudChip(label: 'VELOSIDADE', value: '${(1 + _difficulty).toStringAsFixed(2)}x'),
+      const SizedBox(width: 8),
+      IconButton(onPressed: _pauseGame, icon: const Icon(Icons.pause_rounded, color: Colors.white, size: 26)),
     ]),
   );
+
+  // [. Crash effect — red vignette flash that fades with _crashFxTime
+  Widget _buildCrashEffectOverlay() {
+    final double intensity = (_crashFxTime / 0.72).clamp(0.0, 1.0);
+    return Positioned.fill(
+      child: IgnorePointer(child: Container(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(_crashAtX, 0.6),
+            radius: 1.4,
+            colors: <Color>[
+              Colors.transparent,
+              Colors.redAccent.withOpacity(0.55 * intensity),
+            ],
+          ),
+        ),
+      )),
+    );
+  }
 
   Widget _buildGameOverOverlay() => Positioned.fill(
     child: Container(color: Colors.black54, child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
@@ -512,7 +493,6 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
       OutlinedButton(onPressed: _backToMenu, style: OutlinedButton.styleFrom(foregroundColor: Colors.white), child: const Text('Main Menu')),
     ]))),
   );
-
   Widget _buildPauseOverlay() => Positioned.fill(
     child: Container(color: Colors.black.withOpacity(0.7), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
       const Text('PAUSED', style: TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900)),
@@ -523,19 +503,17 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
       OutlinedButton(onPressed: _backToMenu, style: OutlinedButton.styleFrom(foregroundColor: Colors.white), child: const Text('Main Menu')),
     ]))),
   );
-
   Widget _buildResumeCountdownOverlay() => Positioned.fill(
     child: Container(color: Colors.black.withOpacity(0.55), child: Center(child: Text(
       _resumeCountdown.ceil() > 0 ? '${_resumeCountdown.ceil()}' : 'GO!',
       style: const TextStyle(color: Colors.white, fontSize: 72, fontWeight: FontWeight.w900),
     ))),
   );
-
   Widget _buildTouchControls() {
     if (_isGameOver || _isCrashing || _isPaused || _resumeCountdown > 0) return const SizedBox.shrink();
     return Positioned(left: 0, right: 0, bottom: 24, child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: <Widget>[
-      _ControlButton(icon: Icons.arrow_left_rounded, onPressed: () => _steer(-0.12)),
-      _ControlButton(icon: Icons.arrow_right_rounded, onPressed: () => _steer(0.12)),
+      _ControlButton(icon: Icons.chevron_left_rounded, onPressed: () => _steer(-0.14)),
+      _ControlButton(icon: Icons.chevron_right_rounded, onPressed: () => _steer(0.14)),
     ]));
   }
 
@@ -543,58 +521,140 @@ class _RacingGamePageState extends State<RacingGamePage> with SingleTickerProvid
     body: Container(
       decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
         colors: <Color>[Color(0xFF151A22), Color(0xFF0E1218), Color(0xFF171D25)], stops: <double>[0.0, 0.5, 1.0])),
-      child: SafeArea(child: Center(child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
-          const Text('CAR GAME', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2.2, color: Color(0xFFECEFF4))),
-          const SizedBox(height: 32),
-          TextField(controller: _nameController, style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(labelText: 'Naran Ita-nia', labelStyle: const TextStyle(color: Colors.white60),
-              errorText: _nameValidationMessage, filled: true, fillColor: const Color(0xFF1C2330),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
-          const SizedBox(height: 20),
-          SizedBox(width: double.infinity, child: FilledButton(
-            onPressed: _startGame,
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFE63946),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-            child: const Text('HAHU JOGU', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
-          )),
+      child: SafeArea(child: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(children: <Widget>[
+        const Text('CAR GAME', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2.2, color: Color(0xFFECEFF4))),
+        const SizedBox(height: 8),
+        const Text('HALAI HASORU OBSTAKULU SIRA', style: TextStyle(color: Color(0xFF9AA5B1), fontSize: 11, letterSpacing: 1.0, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 24),
+        TextField(controller: _nameController, style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(labelText: 'Naran', labelStyle: const TextStyle(color: Colors.white70),
+            errorText: _nameValidationMessage, filled: true, fillColor: const Color(0xFF0D1118),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+        const SizedBox(height: 16),
+        Row(children: <Widget>[
+          const Icon(Icons.volume_up, color: Colors.white60),
+          Expanded(child: Slider(value: _masterVolume, onChanged: _setMasterVolume, activeColor: const Color(0xFFE63946))),
         ]),
-      ))),
+        const SizedBox(height: 12),
+        FilledButton.icon(onPressed: _startGame, icon: const Icon(Icons.play_arrow_rounded), label: const Text('KOMESA'),
+          style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2ECC71), minimumSize: const Size(220, 54),
+            textStyle: const TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.8))),
+      ])))),
     ),
   );
 }
 
+// =============================================================================
+// Widget classes
+// =============================================================================
+
+// [. _CarSprite now accepts hasGlow to draw a coloured box shadow
 class _CarSprite extends StatelessWidget {
-  const _CarSprite({required this.assetPath});
+  const _CarSprite({required this.assetPath, this.hasGlow = false});
   final String assetPath;
+  final bool hasGlow;
+
   @override
-  Widget build(BuildContext context) => Image.asset(assetPath, fit: BoxFit.contain);
+  Widget build(BuildContext context) {
+    final Widget img = Image.asset(assetPath, fit: BoxFit.contain);
+    if (!hasGlow) return img;
+    return Container(
+      decoration: BoxDecoration(
+        boxShadow: <BoxShadow>[
+          BoxShadow(color: const Color(0xFF2ECC71).withOpacity(0.45), blurRadius: 18, spreadRadius: 2),
+        ],
+      ),
+      child: img,
+    );
+  }
 }
 
+// [. _HudChip — small pill-shaped label+value widget for the HUD
+class _HudChip extends StatelessWidget {
+  const _HudChip({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+        Text(value,  style: const TextStyle(color: Colors.white,   fontSize: 13, fontWeight: FontWeight.w800)),
+      ]),
+    );
+  }
+}
+
+// [. _SpeedLinesLayer — renders _SpeedLinesPainter as a widget
+class _SpeedLinesLayer extends StatelessWidget {
+  const _SpeedLinesLayer({required this.progress, required this.intensity});
+  final double progress;
+  final double intensity;
+
+  @override
+  Widget build(BuildContext context) =>
+      CustomPaint(painter: _SpeedLinesPainter(progress: progress, intensity: intensity));
+}
+
+// [. _SpeedLinesPainter — draws fast-moving vertical light streaks
+// whose opacity, count, and length scale with the intensity parameter
+class _SpeedLinesPainter extends CustomPainter {
+  const _SpeedLinesPainter({required this.progress, required this.intensity});
+  final double progress;
+  final double intensity;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()..strokeWidth = 1.2;
+    final int count = (18 + (intensity * 24).toInt());
+    final Random rng = Random(42); // fixed seed = stable line positions
+
+    for (int i = 0; i < count; i++) {
+      final double x = rng.nextDouble() * size.width;
+      final double speed = 0.6 + rng.nextDouble() * 0.8;
+      final double y = (progress * speed * 0.18 + rng.nextDouble() * size.height) % size.height;
+      final double centerBias = 1.0 - ((x / size.width - 0.5).abs() * 1.8).clamp(0.0, 1.0);
+      final double alpha = (0.045 + 0.11 * intensity) * (0.55 + centerBias * 0.45);
+      paint.color = const Color(0xFFBBD6FF).withOpacity(alpha);
+      canvas.drawLine(Offset(x, y), Offset(x, y + 16 + 16 * intensity), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SpeedLinesPainter old) =>
+      old.progress != progress || old.intensity != intensity;
+}
+
+// [. _RoadLayer now tiles the road_tile.png image instead of a solid colour
 class _RoadLayer extends StatelessWidget {
   const _RoadLayer({required this.offset});
   final double offset;
-  @override
-  Widget build(BuildContext context) => CustomPaint(painter: _RoadPainter(offset: offset));
-}
 
-class _RoadPainter extends CustomPainter {
-  const _RoadPainter({required this.offset});
-  final double offset;
   @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF1A1F28));
-    final Paint p = Paint()..color = Colors.white24..strokeWidth = 2;
-    for (int i = 1; i < 4; i++) {
-      final double x = size.width * i / 4;
-      double y = -(offset % 40);
-      while (y < size.height) { canvas.drawLine(Offset(x, y), Offset(x, y + 20), p); y += 40; }
-    }
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, c) {
+      final double tileH = c.maxWidth * 0.55;
+      final double scrolledY = -(offset % tileH);
+      return ClipRect(child: Stack(children: <Widget>[
+        // base dark road colour
+        Container(color: const Color(0xFF1A1F28)),
+        // tiled image scrolled downward
+        Positioned(left: 0, right: 0, top: scrolledY, child: Column(children: <Widget>[
+          for (int i = 0; i < (c.maxHeight / tileH).ceil() + 2; i++)
+            SizedBox(width: c.maxWidth, height: tileH,
+              child: Image.asset('assets/images/road_tile.png', fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(color: const Color(0xFF1A1F28)))),
+        ])),
+      ]));
+    });
   }
-  @override
-  bool shouldRepaint(covariant _RoadPainter old) => old.offset != offset;
 }
 
 class _ControlButton extends StatelessWidget {
